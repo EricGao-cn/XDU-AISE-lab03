@@ -50,7 +50,7 @@ pip install thop
     └── finetune/
 ```
 
-| 路径 | 作用 | 本次是否修改 | 关键细节 |
+| 路径 | 作用 | 是否修改 | 关键细节 |
 |---|---|---|---|
 | `main.py` | 训练 baseline（原始 VGG11） | 否 | 产出 `outputs/baseline/model_best.pth.tar` |
 | `vggprune.py` | 按 Filter L1-norm 执行结构化剪枝 | 是 | 已补全 L1 计算、保留通道索引、Conv/BN/FC 权重迁移 |
