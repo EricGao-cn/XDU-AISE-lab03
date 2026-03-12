@@ -138,3 +138,5 @@ dmypy.json
 trained_models/
 checkpoints/
 results/
+data/
+outputs/

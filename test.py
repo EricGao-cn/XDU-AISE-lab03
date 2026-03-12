@@ -10,6 +10,13 @@ from torchvision import datasets, transforms
 from models import vgg
 import thop
 
+
+def ratio_or_inf(numerator, denominator):
+    if denominator == 0:
+        return float('inf')
+    return numerator / denominator
+
+
 # Prune settings
 parser = argparse.ArgumentParser(description='PyTorch Slimming CIFAR prune')
 parser.add_argument('--dataset', type=str, default='cifar10',
@@ -63,59 +70,90 @@ def test(model):
 
 # 加载剪枝前VGG11的Baseline
 model = vgg.vgg(dataset=args.dataset, depth=args.depth)
-print("=> loading checkpoint '{}'".format(???))
-checkpoint = torch.load(???)
+print("=> loading checkpoint '{}'".format(args.baseline))
+checkpoint = torch.load(args.baseline, map_location='cpu')
 model.load_state_dict(checkpoint['state_dict'], strict=False)
 
 if args.cuda:
     model.cuda()
 # 测试剪枝前模型精度
-acc = ???
+baseline_acc = test(model)
 # 初始化一个数据输入模型，计算剪枝前模型的参数量与计算量
-x = ???
-flops, params = thop.profile(model, inputs=(x,))
+x = torch.randn(1, 3, 32, 32)
+if args.cuda:
+    x = x.cuda()
+baseline_flops, baseline_params = thop.profile(model, inputs=(x,))
 print("before prune:")
-print("params:", params)
-print("FLOPs:", flops)
+print("params:", baseline_params)
+print("FLOPs:", baseline_flops)
 
 
 # 加载剪枝后微调前的模型
 cfg = [64, 'M', 128, 'M', 256, 256, 'M', 256, 256, 'M', 256, 256]
 newmodel_pruned = vgg.vgg(dataset=args.dataset, depth=args.depth, cfg=cfg)
-print("=> loading checkpoint '{}'".format(???))
-checkpoint = torch.load(???)
+print("=> loading checkpoint '{}'".format(args.pruned))
+checkpoint = torch.load(args.pruned, map_location='cpu')
 newmodel_pruned.load_state_dict(checkpoint['state_dict'], strict=False)
 
 if args.cuda:
     newmodel_pruned.cuda()
 
 # 测试剪枝后微调前的模型精度
-acc = ???
+pruned_acc = test(newmodel_pruned)
 
 # 同样初始化一个数据输入模型，计算剪枝后微调前模型的参数量与计算量
-x = ???
-flops, params = thop.profile(newmodel_pruned, inputs=(x,))
+x = torch.randn(1, 3, 32, 32)
+if args.cuda:
+    x = x.cuda()
+pruned_flops, pruned_params = thop.profile(newmodel_pruned, inputs=(x,))
 print("after prune, before finetune:")
-print("params:", params)
-print("FLOPs:", flops)
+print("params:", pruned_params)
+print("FLOPs:", pruned_flops)
 
 
 # 加载微调后的模型
 cfg = [64, 'M', 128, 'M', 256, 256, 'M', 256, 256, 'M', 256, 256]
 newmodel_finetune = vgg.vgg(dataset=args.dataset, depth=args.depth, cfg=cfg)
-print("=> loading checkpoint '{}'".format(???))
-checkpoint = torch.load(???)
+print("=> loading checkpoint '{}'".format(args.finetune))
+checkpoint = torch.load(args.finetune, map_location='cpu')
 newmodel_finetune.load_state_dict(checkpoint['state_dict'], strict=False)
 
 if args.cuda:
     newmodel_finetune.cuda()
 
 # 测试微调后模型精度
-acc = ???
+finetune_acc = test(newmodel_finetune)
 
 # 同样初始化一个数据输入模型，计算微调后模型的参数量与计算量
-x = ???
-flops, params = thop.profile(newmodel_finetune, inputs=(x,))
+x = torch.randn(1, 3, 32, 32)
+if args.cuda:
+    x = x.cuda()
+finetune_flops, finetune_params = thop.profile(newmodel_finetune, inputs=(x,))
 print("after finetune:")
-print("params:", params)
-print("FLOPs:", flops)
+print("params:", finetune_params)
+print("FLOPs:", finetune_flops)
+
+print("\n==================== Summary ====================")
+print("{:<28} {:>10} {:>15} {:>15}".format("Model", "Acc(%)", "Params", "FLOPs"))
+print("{:<28} {:>10.2f} {:>15,.0f} {:>15,.0f}".format(
+    "Baseline", baseline_acc * 100.0, baseline_params, baseline_flops))
+print("{:<28} {:>10.2f} {:>15,.0f} {:>15,.0f}".format(
+    "Pruned (before finetune)", pruned_acc * 100.0, pruned_params, pruned_flops))
+print("{:<28} {:>10.2f} {:>15,.0f} {:>15,.0f}".format(
+    "Pruned (after finetune)", finetune_acc * 100.0, finetune_params, finetune_flops))
+
+param_reduction = (1.0 - ratio_or_inf(pruned_params, baseline_params)) * 100.0
+flops_reduction = (1.0 - ratio_or_inf(pruned_flops, baseline_flops)) * 100.0
+param_compression = ratio_or_inf(baseline_params, pruned_params)
+flops_speedup = ratio_or_inf(baseline_flops, pruned_flops)
+acc_drop_prune = (baseline_acc - pruned_acc) * 100.0
+acc_drop_finetune = (baseline_acc - finetune_acc) * 100.0
+recovery_ratio = ratio_or_inf((finetune_acc - pruned_acc), (baseline_acc - pruned_acc)) * 100.0
+
+print("-------------------------------------------------")
+print("Accuracy drop after prune: {:.2f} pp".format(acc_drop_prune))
+print("Accuracy drop after finetune vs baseline: {:.2f} pp".format(acc_drop_finetune))
+print("Accuracy recovery by finetune: {:.2f}%".format(recovery_ratio))
+print("Parameter reduction: {:.2f}% ({:.2f}x smaller)".format(param_reduction, param_compression))
+print("FLOPs reduction: {:.2f}% ({:.2f}x theoretical speedup)".format(flops_reduction, flops_speedup))
+print("=================================================\n")

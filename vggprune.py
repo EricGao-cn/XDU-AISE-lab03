@@ -39,7 +39,7 @@ if args.cuda:
 if args.model:
     if os.path.isfile(args.model):
         print("=> loading checkpoint '{}'".format(args.model))
-        checkpoint = torch.load(args.model)
+        checkpoint = torch.load(args.model, map_location='cpu')
         args.start_epoch = checkpoint['epoch']
         best_prec1 = checkpoint['best_prec1']
         model.load_state_dict(checkpoint['state_dict'], strict=False)
@@ -66,27 +66,27 @@ for m in model.modules():
         # 计算当前卷积层每一个卷积核的L1范数
         weight_copy = m.weight.data.abs().clone()
         weight_copy = weight_copy.cpu().numpy()
-        L1_norm = ???
+        L1_norm = np.sum(weight_copy, axis=(1, 2, 3))
         # 对每一个卷积核的L1范数排序，得到排序结果的索引
         arg_max = np.argsort(L1_norm)
         # 根据cfg中对应层所需保留的输出通道数n和排序结果，从大到小取前n个输出通道的索引
-        arg_max_rev = ???
+        arg_max_rev = arg_max[::-1][:cfg[layer_id]]
         assert arg_max_rev.size == cfg[layer_id], "size of arg_max_rev not correct"
         # mask为当前层输出通道的掩膜
         mask = torch.zeros(out_channels)
-        mask[???] = 1
+        mask[arg_max_rev.tolist()] = 1
         cfg_mask.append(mask)
         layer_id += 1
     elif isinstance(m, nn.MaxPool2d):
         layer_id += 1
 
 # 根据上述新定义的cfg构建新模型
-newmodel = vgg.vgg(dataset=args.dataset, depth=args.depth)
+newmodel = vgg.vgg(dataset=args.dataset, depth=args.depth, cfg=cfg)
 if args.cuda:
     newmodel.cuda()
 
 # start_mask为输入通道的掩膜，初始化为第一个卷积层输入通道的掩膜
-start_mask = ???
+start_mask = torch.ones(3)
 layer_id_in_cfg = 0
 # end_mask为输出通道的掩膜，初始化为第一个卷积层的输出通道的掩膜
 end_mask = cfg_mask[layer_id_in_cfg]
@@ -97,30 +97,30 @@ for [m0, m1] in zip(model.modules(), newmodel.modules()):
         if idx1.size == 1:
             idx1 = np.resize(idx1, (1,))
         # 根据索引移植权重
-        m1.weight.data = m0.weight.data[???].clone()
-        m1.bias.data = m0.bias.data[???].clone()
+        m1.weight.data = m0.weight.data[idx1.tolist()].clone()
+        m1.bias.data = m0.bias.data[idx1.tolist()].clone()
         m1.running_mean = m0.running_mean[idx1.tolist()].clone()
         m1.running_var = m0.running_var[idx1.tolist()].clone()
         # 当前BN层权重移植结束，输入和输出通道的掩膜进行迭代更新
         layer_id_in_cfg += 1
         # 下一层的输入通道掩膜等于当前层的输出通道掩膜
-        start_mask = ???
+        start_mask = end_mask
         if layer_id_in_cfg < len(cfg_mask):  # do not change in Final FC
             # end_mask变为下一层的掩膜
             end_mask = cfg_mask[layer_id_in_cfg]
     elif isinstance(m0, nn.Conv2d):
         # idx0是从start_mask中得到当前卷积层m0需要保留输入通道的索引
-        idx0 = ???
+        idx0 = np.squeeze(np.argwhere(np.asarray(start_mask.cpu().numpy())))
         # idx1是从end_mask中得到当前卷积层m0需要保留输出通道的索引
-        idx1 = ???
+        idx1 = np.squeeze(np.argwhere(np.asarray(end_mask.cpu().numpy())))
         print('In shape: {:d}, Out shape {:d}.'.format(idx0.size, idx1.size))
         if idx0.size == 1:
             idx0 = np.resize(idx0, (1,))
         if idx1.size == 1:
             idx1 = np.resize(idx1, (1,))
         # 根据索引移植权重
-        w1 = m0.weight.data[:, ???, :, :].clone()
-        w1 = w1[???, :, :, :].clone()
+        w1 = m0.weight.data[:, idx0.tolist(), :, :].clone()
+        w1 = w1[idx1.tolist(), :, :, :].clone()
         m1.weight.data = w1.clone()
     elif isinstance(m0, nn.Linear):
         # 第一个全连接层的输入节点根据上一层的剪枝结果，进行剪枝
@@ -148,4 +148,3 @@ model = newmodel
 num_parameters = sum([param.nelement() for param in newmodel.parameters()])
 with open(os.path.join(args.save, "prune.txt"), "w") as fp:
     fp.write("Number of parameters: \n" + str(num_parameters) + "\n")
-
